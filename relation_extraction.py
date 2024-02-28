@@ -4,6 +4,10 @@ from torch.utils.data import DataLoader, RandomSampler
 from classifier import ClassificationModel
 import torch.optim as optim
 import torch
+import numpy as np
+from pathlib import Path
+import time
+import tqdm
 
 """
 === Purpose ===
@@ -77,7 +81,20 @@ def initialize_data(rels_dict, model):
 
 	return train_dataset, dev_dataset, test_dataset
 
-def train(train_dataset, dev_dataset, model, device):
+def compute_class_weights(labels):
+	#idx_to_rel = {idx: rel for (rel, idx) in rels_dict.items()}
+	#columns = ["subject", "object", "sentence", "relation"]
+	#df = pd.read_table(data_path, header=None, names=columns, sep='\t')
+	#rels, counts = np.unique(df['relation'].dropna().to_numpy(), return_counts=True)
+	#assert set(rels) == set(rels_dict.keys()), "Error, unexpected relations encountered in the relation dict"
+	_, counts = np.unique(labels, return_counts=True)
+	probs = counts / counts.sum()
+	#class_weights_dict = {rel: 1. / prob for (rel, prob) in zip(rels, probs)}
+	#class_weights = [class_weights_dict[idx_to_rel[idx]] for idx in range(len(rels))]
+	class_weights = torch.tensor(1 / probs, dtype=torch.float32)
+	return class_weights
+
+def train(train_dataset, dev_dataset, model, class_weights, device):
 	'''
 	A few parameters you can play with. The higher the batch size, the higher memory usage.
 	'''
@@ -92,8 +109,9 @@ def train(train_dataset, dev_dataset, model, device):
 
 	optimizer.zero_grad()
 
-	loss = torch.nn.CrossEntropyLoss()
+	loss = torch.nn.CrossEntropyLoss(weight=class_weights)
 	training_losses, dev_losses = [], []
+	train_progress = tqdm.trange(0, num_epochs * len(train_loader))
 	for epoch in range(num_epochs):
 		training_loss = 0
 		dev_loss = 0
@@ -112,6 +130,8 @@ def train(train_dataset, dev_dataset, model, device):
 				optimizer.zero_grad()
 				del outputs, batch_loss
 				torch.cuda.empty_cache()
+			train_progress.update(1)
+			
 		optimizer.step()
 		optimizer.zero_grad()
 		del outputs, batch_loss
@@ -119,6 +139,8 @@ def train(train_dataset, dev_dataset, model, device):
 
 		#Every step, we check the loss on the dev set (helps detecting overfitting)
 		model.eval()
+		print("Starting evaluation ...")
+		eval_progress = tqdm.trange(0, len(dev_loader))
 		with torch.no_grad():
 			for step, (examples, labels, _, _) in enumerate(dev_loader):
 				labels = labels.to(device)
@@ -129,12 +151,24 @@ def train(train_dataset, dev_dataset, model, device):
 
 				del outputs, batch_loss
 				torch.cuda.empty_cache()
+				eval_progress.update(1)
 
 			print("Training Loss - Epoch " + str(epoch) + " - " + str(training_loss))
 			print("Dev Loss - Epoch " + str(epoch) + " - " + str(dev_loss))
 			training_losses.append(training_loss)
 			dev_losses.append(dev_loss)
 
+		savepath = Path(f"./checkpoints/{time.strftime("%d_%m_%Y_%H_%M_%S")}_checkpoint.pt")
+		torch.save({
+			"model_classifier_state_dict": model.classification_layer.state_dict(),
+			"optimize_state_dict": optimizer.state_dict(),
+			"num_epochs": num_epochs,
+			"epoch": epoch,
+			"learning_rate": learning_rate,
+			"batch_size": batch_size,
+			"update_every_n_steps": update_every_n_steps
+		}, savepath)
+		
 	print(training_losses)
 	print(dev_losses)
 	return model
@@ -159,10 +193,14 @@ def run():
 
 	model, device = initialize_model(rels_dict)
 	train_dataset, dev_dataset, test_dataset = initialize_data(rels_dict, model)
+	#class_weights = compute_class_weights("./silver-train.tsv", rels_dict).to(device)
+	labels = list(map(lambda x: x[1], train_dataset))
+	class_weights = compute_class_weights(labels).to(device)
 	
-	model = train(train_dataset, dev_dataset, model, device)
+	model = train(train_dataset, dev_dataset, model, class_weights, device)
 	infer_write(dev_dataset, model, invert_rels_dict)
 	run_evaluation()
 	infer_write(test_dataset, model, invert_rels_dict, mode="test")
 
-run()
+if __name__ == "__main__":
+	run()

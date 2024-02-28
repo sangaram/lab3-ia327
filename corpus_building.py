@@ -23,8 +23,14 @@ def prepare_text(subject, object, sentence):
     Thus, your input will be a text (1 sentence) that gives as much relevant information to the model as possible.
     
     '''
-
-    return subject + " " + sentence + " " + object
+    if subject.startswith('"'):
+        subject = subject[1:-1]
+    
+    idx = subject.find(":")
+    if idx >= 0:
+        subject = subject[idx+1:]
+        
+    return f"{sentence} [SEP] subject:{subject} [SEP] object:{object}"
 
 def prepare_data(rels_dict, mode = "train"):
     '''
@@ -37,13 +43,22 @@ def prepare_data(rels_dict, mode = "train"):
         raw_corpus = read_corpus("silver-test.tsv")
     
     data = []
-    for subj, obj, sentence, rel in raw_corpus:
+    # no_rel_data = []
+    for subj, obj, sentence, rel in raw_corpus:        
         rel_id = rels_dict[rel]
         input_sentence = prepare_text(subj, obj, sentence)
         if mode == "train":
+            # if rel == "no_rel":
+            #     no_rel_data.append((input_sentence, rel_id, subj, obj))
+            # else:
             data.append((input_sentence, rel_id, subj, obj))
         else:
             data.append((input_sentence, rel_id, subj, obj))
+    
+    # if mode == "train":
+    #     no_rel_subsample = random.sample(no_rel_data, k=int(0.8 * len(no_rel_data)))
+    #     data = no_rel_subsample + data
+    #     random.shuffle(data)
     return data
 
 class FactsDataset(Dataset):
